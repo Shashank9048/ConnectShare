@@ -45,7 +45,7 @@ export const DiscoverPage = () => {
     try {
       const res = await api.get(`/api/v1/workspaces/discover?q=${debouncedSearch}`);
       setWorkspaces(res.data.data.workspaces || res.data.data);
-    } catch (e) {
+    } catch (_e) {
       addToast('Failed to load public workspaces', 'error');
     } finally {
       setLoading(false);

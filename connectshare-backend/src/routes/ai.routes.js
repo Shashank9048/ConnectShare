@@ -16,7 +16,28 @@ const path = require('path');
 const uploadsDir = path.join(__dirname, '../../uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
+const requestId = () => `ai-route-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const isAIUnavailable = (err) =>
+  err?.isAIError ||
+  err.message?.includes('All Gemini models') ||
+  err.message?.includes('All AI models') ||
+  err.message?.includes('configured Gemini models');
+
+const sendAIUnavailable = (res, err, fallbackMessage = 'AI service unavailable. Please try again later.') => {
+  return res.status(err.status || 503).json({
+    success: false,
+    error: err.message || fallbackMessage,
+    reason: err.reason || 'ai_unavailable',
+    modelAttempted: err.modelAttempted || 'gemini-2.5-flash',
+    fallbacksTried: err.fallbacksTried || [],
+    timestamp: err.timestamp || new Date().toISOString(),
+    ...(process.env.NODE_ENV !== 'production' && err.failures ? { failures: err.failures } : {}),
+  });
+};
+
 router.post('/summarize', authMiddleware, async (req, res, next) => {
+  const rid = requestId();
   try {
     const { resourceId } = req.body;
     if (!resourceId) {
@@ -28,9 +49,9 @@ router.post('/summarize', authMiddleware, async (req, res, next) => {
       return res.status(404).json({ success: false, error: 'Resource not found' });
     }
 
-    console.log(`AI summarize start: resource="${resource.title}"`);
+    console.log(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'summarize.start', resourceId, resourceTitle: resource.title })}`);
     const result = await summarizeResource(resource);
-    console.log(`AI summarize end: model=${result.modelUsed}, contentRead=${result.contentRead}`);
+    console.log(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'summarize.end', modelUsed: result.modelUsed, contentRead: result.contentRead })}`);
 
     res.json({
       success: true,
@@ -48,15 +69,16 @@ router.post('/summarize', authMiddleware, async (req, res, next) => {
       },
     });
   } catch (err) {
-    console.error('Summarize error:', err.message);
-    if (err.message?.includes('All Gemini models') || err.message?.includes('All AI models')) {
-      return res.status(503).json({ success: false, error: 'AI service unavailable. Please try again later.' });
+    console.error(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'summarize.error', error: err.message, reason: err.reason })}`);
+    if (isAIUnavailable(err)) {
+      return sendAIUnavailable(res, err);
     }
     next(err);
   }
 });
 
 router.post('/chat', authMiddleware, async (req, res, next) => {
+  const rid = requestId();
   try {
     const { question, resourceId, workspaceId, conversationHistory = [] } = req.body;
 
@@ -70,10 +92,13 @@ router.post('/chat', authMiddleware, async (req, res, next) => {
       });
     }
 
-    console.log('\nAI Chat');
-    console.log(`   Question: "${question.slice(0, 80)}"`);
-    console.log(`   Mode: ${resourceId ? 'resource' : 'workspace'}`);
-    console.log(`   History length: ${conversationHistory.length}`);
+    console.log(`[AI_ROUTE] ${JSON.stringify({
+      requestId: rid,
+      event: 'chat.start',
+      questionPreview: question.slice(0, 120),
+      mode: resourceId ? 'resource' : 'workspace',
+      historyLength: Array.isArray(conversationHistory) ? conversationHistory.length : 0,
+    })}`);
 
     let result;
     if (resourceId) {
@@ -82,31 +107,29 @@ router.post('/chat', authMiddleware, async (req, res, next) => {
         return res.status(404).json({ success: false, error: 'Resource not found' });
       }
 
-      console.log(`   Resource: "${resource.title}"`);
+      console.log(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'chat.resource', resourceId, resourceTitle: resource.title })}`);
       result = await chatAboutResource(question.trim(), resource, conversationHistory);
       result.mode = 'resource';
       result.resourceTitle = resource.title;
     } else {
-      console.log(`   Workspace: ${workspaceId}`);
+      console.log(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'chat.workspace', workspaceId })}`);
       result = await chatAboutWorkspace(question.trim(), workspaceId, conversationHistory);
       result.mode = 'workspace';
     }
 
-    console.log(`Chat answered: model=${result.modelUsed}`);
+    console.log(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'chat.end', modelUsed: result.modelUsed, mode: result.mode })}`);
     res.json({ success: true, data: result });
   } catch (err) {
-    console.error('Chat error:', err.message);
-    if (err.message?.includes('All Gemini models') || err.message?.includes('All AI models')) {
-      return res.status(503).json({
-        success: false,
-        error: 'AI is temporarily unavailable. Please try again in a moment.',
-      });
+    console.error(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'chat.error', error: err.message, reason: err.reason })}`);
+    if (isAIUnavailable(err)) {
+      return sendAIUnavailable(res, err, 'AI is temporarily unavailable. Please try again in a moment.');
     }
     next(err);
   }
 });
 
 router.post('/generate', authMiddleware, async (req, res, next) => {
+  const rid = requestId();
   try {
     const { prompt, type = 'notes', workspaceId, title, tags = [] } = req.body;
 
@@ -117,8 +140,8 @@ router.post('/generate', authMiddleware, async (req, res, next) => {
       return res.status(400).json({ success: false, error: 'workspaceId is required' });
     }
 
-    console.log(`AI generate start: type=${type}, prompt="${prompt.slice(0, 60)}"`);
-    const { content, modelUsed } = await generateContent(prompt.trim(), type);
+    console.log(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'generate.start', type, promptPreview: prompt.slice(0, 120), workspaceId })}`);
+    const { content, modelUsed, note } = await generateContent(prompt.trim(), type);
 
     const fileName = `${Date.now()}-ai-${type}.md`;
     const filePath = path.join(uploadsDir, fileName);
@@ -149,37 +172,40 @@ router.post('/generate', authMiddleware, async (req, res, next) => {
       workspaceId,
     });
 
-    console.log(`AI generate end: model=${modelUsed}, resource="${resource.title}"`);
+    console.log(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'generate.end', modelUsed, resourceId: resource._id, resourceTitle: resource.title })}`);
     res.status(201).json({
       success: true,
-      data: { resource, content, modelUsed },
-      message: 'Content generated and saved to workspace',
+      data: { resource, content, modelUsed, note: note || null },
+      message: modelUsed === 'local-fallback'
+        ? 'Fallback notes saved to workspace. Try regenerating later for full AI output.'
+        : 'Content generated and saved to workspace',
     });
   } catch (err) {
-    console.error('Generate error:', err.message);
-    if (err.message?.includes('All Gemini models') || err.message?.includes('All AI models')) {
-      return res.status(503).json({ success: false, error: 'AI service unavailable. Please try again later.' });
+    console.error(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'generate.error', error: err.message, reason: err.reason })}`);
+    if (isAIUnavailable(err)) {
+      return sendAIUnavailable(res, err);
     }
     next(err);
   }
 });
 
 router.post('/web-search', authMiddleware, async (req, res, next) => {
+  const rid = requestId();
   try {
     const { query } = req.body;
     if (!query?.trim()) {
       return res.status(400).json({ success: false, error: 'query is required' });
     }
 
-    console.log(`AI web-search start: query="${query}"`);
+    console.log(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'web_search.start', queryPreview: query.slice(0, 120) })}`);
     const results = await webSearch(query.trim());
-    console.log(`AI web-search end: model=generateWithFallback, results=${results.length}`);
+    console.log(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'web_search.end', results: results.length })}`);
 
     res.json({ success: true, data: { results } });
   } catch (err) {
-    console.error('Web search error:', err.message);
-    if (err.message?.includes('All Gemini models') || err.message?.includes('All AI models')) {
-      return res.status(503).json({ success: false, error: 'AI service unavailable. Please try again later.' });
+    console.error(`[AI_ROUTE] ${JSON.stringify({ requestId: rid, event: 'web_search.error', error: err.message, reason: err.reason })}`);
+    if (isAIUnavailable(err)) {
+      return sendAIUnavailable(res, err);
     }
     next(err);
   }

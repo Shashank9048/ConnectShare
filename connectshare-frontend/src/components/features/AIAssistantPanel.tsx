@@ -27,6 +27,7 @@ interface Message {
   sourcesUsed?: string[];
   contentRead?: boolean;
   isError?: boolean;
+  retryQuestion?: string;
   timestamp: string;
 }
 
@@ -54,9 +55,17 @@ interface Props {
 
 const TABS: Tab[] = ['Generate', 'Summarize', 'Chat'];
 const loadingSteps = ['Reading file...', 'Analyzing content...', 'Writing summary...'];
+const AI_REQUEST_TIMEOUT_MS = 45000;
+
+const escapeHtml = (text: string): string => text
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
 
 const renderMarkdown = (text: string): string => {
-  return text
+  return escapeHtml(text)
     .replace(/^### (.+)$/gm, '<h3 style="color:var(--text-primary);margin:14px 0 6px;font-size:14px;font-weight:700">$1</h3>')
     .replace(/^## (.+)$/gm, '<h2 style="color:var(--text-primary);margin:18px 0 8px;font-size:16px;font-weight:700;border-bottom:1px solid var(--border);padding-bottom:4px">$1</h2>')
     .replace(/^# (.+)$/gm, '<h1 style="color:var(--text-primary);margin:20px 0 10px;font-size:18px;font-weight:800">$1</h1>')
@@ -67,6 +76,15 @@ const renderMarkdown = (text: string): string => {
     .replace(/^(\d+)\. (.+)$/gm, '<div style="display:flex;gap:8px;margin:3px 0"><span style="color:#6366F1;flex-shrink:0;font-weight:700">$1.</span><span style="color:var(--text-primary);line-height:1.5">$2</span></div>')
     .replace(/\n\n/g, '<div style="margin:8px 0"></div>')
     .replace(/\n/g, '<br/>');
+};
+
+const getAIErrorMessage = (err: any, fallback: string) => {
+  if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') return 'Request cancelled.';
+  if (err?.code === 'ECONNABORTED') return 'AI request timed out. Please try again.';
+
+  const data = err?.response?.data;
+  if (data?.error && data?.reason) return `${data.error} (${data.reason})`;
+  return data?.error || err?.message || fallback;
 };
 
 const formatBytes = (bytes?: number) => {
@@ -83,6 +101,16 @@ const iconForResource = (resource?: Resource) => {
   if (type.includes('image')) return '🖼️';
   if (type.includes('text') || type.includes('markdown') || type.includes('json')) return '📝';
   return '📎';
+};
+
+const isLikelyReadable = (resource?: Resource) => {
+  const type = `${resource?.fileType || resource?.type || ''}`.toLowerCase();
+  return !!resource?.isAIGenerated ||
+    type.startsWith('text/') ||
+    type.includes('markdown') ||
+    type.includes('json') ||
+    type.includes('javascript') ||
+    type.includes('xml');
 };
 
 const MarkdownBlock = ({ content }: { content: string }) => (
@@ -123,6 +151,7 @@ export default function AIAssistantPanel({
   const [conversation, setConversation] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const chatAbortControllerRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -151,6 +180,7 @@ export default function AIAssistantPanel({
 
   const canChat = mode === 'workspace' || !!selectedResourceId;
   const tagPreview = tags.split(',').map((tag) => tag.trim()).filter(Boolean);
+  const selectedChatResource = resources.find((resource) => resource._id === selectedResourceId);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -158,6 +188,9 @@ export default function AIAssistantPanel({
     if (defaultResourceId) {
       setMode('resource');
       setSelectedResourceId(defaultResourceId);
+    } else if (defaultTab === 'Generate') {
+      setSelectedResource(null);
+      setSelectedResourceId('');
     }
   }, [defaultResourceId, defaultTab, isOpen]);
 
@@ -182,7 +215,18 @@ export default function AIAssistantPanel({
   useEffect(() => {
     setConversation([]);
     setInput('');
+    chatAbortControllerRef.current?.abort();
+    chatAbortControllerRef.current = null;
+    setChatLoading(false);
   }, [mode, selectedResourceId]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      chatAbortControllerRef.current?.abort();
+      chatAbortControllerRef.current = null;
+      setChatLoading(false);
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     if (selectedResourceId || mode === 'workspace') {
@@ -210,21 +254,31 @@ export default function AIAssistantPanel({
 
     try {
       const tagArray = tags.split(',').map((tag) => tag.trim()).filter(Boolean);
-      const res = await api.post('/api/v1/ai/generate', {
-        prompt: prompt.trim(),
-        type: 'notes',
-        workspaceId,
-        title: title.trim() || undefined,
-        tags: tagArray,
-      });
-      setGeneratedContent(res.data.data.content);
+      const res = await api.post(
+        '/api/v1/ai/generate',
+        {
+          prompt: prompt.trim(),
+          type: 'notes',
+          workspaceId,
+          title: title.trim() || undefined,
+          tags: tagArray,
+        },
+        { timeout: AI_REQUEST_TIMEOUT_MS }
+      );
+      const data = res.data.data;
+      setGeneratedContent(data.content);
       queryClient.invalidateQueries({ queryKey: ['resources'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
       onResourceCreated?.();
       fetchResources().catch(() => undefined);
-      addToast('Notes generated and saved to workspace!', 'success');
+      addToast(
+        data.modelUsed === 'local-fallback'
+          ? 'Fallback notes saved. Try again later for full AI output.'
+          : 'Notes generated and saved to workspace!',
+        'success'
+      );
     } catch (err: any) {
-      const msg = err.response?.data?.error || err.message || 'Generation failed';
+      const msg = getAIErrorMessage(err, 'Generation failed');
       addToast(msg, 'error');
       console.error('Generate error:', err.response?.data || err.message);
     } finally {
@@ -245,11 +299,11 @@ export default function AIAssistantPanel({
     }, 2000);
 
     try {
-      const res = await api.post('/api/v1/ai/summarize', { resourceId: selectedResource._id });
+      const res = await api.post('/api/v1/ai/summarize', { resourceId: selectedResource._id }, { timeout: AI_REQUEST_TIMEOUT_MS });
       setSummary(res.data.data);
       addToast('Summary generated', 'success');
     } catch (err: any) {
-      addToast(err.response?.data?.error || 'Summarization failed. Please try again.', 'error');
+      addToast(getAIErrorMessage(err, 'Summarization failed. Please try again.'), 'error');
     } finally {
       window.clearInterval(interval);
       setSummarizing(false);
@@ -282,6 +336,7 @@ export default function AIAssistantPanel({
   const sendMessage = async (questionText?: string) => {
     const question = (questionText || input).trim();
     if (!question) return;
+    if (chatLoading) return;
 
     if (mode === 'resource' && !selectedResourceId) {
       addToast('Please select a resource first', 'error');
@@ -302,6 +357,9 @@ export default function AIAssistantPanel({
     setInput('');
     setConversation((prev) => [...prev, userMessage]);
     setChatLoading(true);
+    chatAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    chatAbortControllerRef.current = controller;
 
     try {
       const payload = {
@@ -309,12 +367,15 @@ export default function AIAssistantPanel({
         conversationHistory: history,
         ...(mode === 'resource' ? { resourceId: selectedResourceId } : { workspaceId }),
       };
-      const res = await api.post('/api/v1/ai/chat', payload);
+      const res = await api.post('/api/v1/ai/chat', payload, {
+        signal: controller.signal,
+        timeout: AI_REQUEST_TIMEOUT_MS,
+      });
       const data = res.data.data;
       const aiMessage: Message = {
         id: `ai-${Date.now()}`,
         role: 'assistant',
-        content: data.answer,
+        content: data.answer || 'I could not produce a response. Please try again.',
         modelUsed: data.modelUsed,
         sourcesUsed: data.sourcesUsed || [],
         contentRead: data.contentRead,
@@ -322,16 +383,21 @@ export default function AIAssistantPanel({
       };
       setConversation((prev) => [...prev, aiMessage]);
     } catch (err: any) {
-      const errorText = err.response?.data?.error || 'AI chat failed. Please try again.';
+      if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') return;
+      const errorText = getAIErrorMessage(err, 'AI chat failed. Please try again.');
       addToast(errorText, 'error');
       setConversation((prev) => [...prev, {
         id: `err-${Date.now()}`,
         role: 'assistant',
         content: `Warning: ${errorText}`,
         isError: true,
+        retryQuestion: question,
         timestamp: new Date().toISOString(),
       }]);
     } finally {
+      if (chatAbortControllerRef.current === controller) {
+        chatAbortControllerRef.current = null;
+      }
       setChatLoading(false);
       window.setTimeout(() => inputRef.current?.focus(), 100);
     }
@@ -413,7 +479,7 @@ export default function AIAssistantPanel({
                 >
                   <div>
                     <h3 className="text-base font-extrabold text-text-primary">📝 Generate Notes</h3>
-                    <p className="text-xs text-text-muted mt-1">Enter any topic and AI will create comprehensive study notes.</p>
+                    <p className="text-xs text-text-muted mt-1">AI-powered notes from any topic.</p>
                   </div>
 
                   <label className="block">
@@ -555,7 +621,12 @@ export default function AIAssistantPanel({
                       </div>
                       {!summary.contentRead && (
                         <div className="m-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-xs font-medium text-text-primary">
-                          ⚠️ Could not read file content. Summary is based on filename and tags only.
+                          ⚠️ Could not read file content (binary format). Summary is based on filename and tags only.
+                        </div>
+                      )}
+                      {summary.modelUsed === 'local-fallback' && (
+                        <div className="m-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-xs font-medium text-text-primary">
+                          AI provider is temporarily unavailable. This is a local fallback summary from available content.
                         </div>
                       )}
                       <div className="max-h-[420px] overflow-y-auto p-3">
@@ -611,7 +682,10 @@ export default function AIAssistantPanel({
                         )}
                         {selectedResourceId && (
                           <div className="rounded-lg border border-primary/20 bg-primary/10 p-2.5 text-[11px] text-indigo-300">
-                            💬 Chatting about: <strong className="text-primary">{selectedResourceTitle}</strong>
+                            <div>💬 Chatting about: <strong className="text-primary">{selectedResourceTitle}</strong></div>
+                            <div className="mt-1 text-text-muted">
+                              {selectedChatResource?.fileType || 'Resource'} · {isLikelyReadable(selectedChatResource) ? 'AI will read the content when possible' : 'AI will use metadata if the file is binary'}
+                            </div>
                           </div>
                         )}
                       </>
@@ -619,7 +693,7 @@ export default function AIAssistantPanel({
 
                     {mode === 'workspace' && (
                       <div className="rounded-lg border border-primary/20 bg-primary/10 p-2.5 text-[11px] leading-5 text-text-muted">
-                        💡 AI will search across all resources in this workspace to answer your question.
+                        💡 AI will search across up to 5 resources in this workspace to answer your question.
                       </div>
                     )}
                   </div>
@@ -648,7 +722,8 @@ export default function AIAssistantPanel({
                                 whileHover={{ scale: 1.03 }}
                                 whileTap={{ scale: 0.97 }}
                                 onClick={() => sendMessage(suggestion)}
-                                className="rounded-full border border-primary/35 bg-primary/10 px-3 py-1.5 text-left text-xs text-indigo-300"
+                                disabled={chatLoading}
+                                className="rounded-full border border-primary/35 bg-primary/10 px-3 py-1.5 text-left text-xs text-indigo-300 disabled:opacity-50"
                               >
                                 {suggestion}
                               </motion.button>
@@ -681,6 +756,19 @@ export default function AIAssistantPanel({
                               <button onClick={() => copyText(message.content, 'Copied!')} className="rounded border border-border-color px-1.5 py-0.5 text-[10px] text-text-muted">
                                 Copy
                               </button>
+                            </div>
+                          ) : message.role === 'assistant' && message.isError ? (
+                            <div className="mt-1 flex items-center gap-2 px-1 text-[10px] text-text-muted">
+                              <span>{formatTime(message.timestamp)}</span>
+                              {message.retryQuestion && (
+                                <button
+                                  onClick={() => sendMessage(message.retryQuestion)}
+                                  disabled={chatLoading}
+                                  className="rounded border border-border-color px-1.5 py-0.5 text-[10px] text-text-muted disabled:opacity-50"
+                                >
+                                  Retry
+                                </button>
+                              )}
                             </div>
                           ) : (
                             <span className="mt-1 px-1 text-[10px] text-text-muted">{formatTime(message.timestamp)}</span>

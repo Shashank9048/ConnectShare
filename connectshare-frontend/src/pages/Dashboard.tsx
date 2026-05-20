@@ -63,7 +63,7 @@ export default function Dashboard() {
       setNewWorkspaceName('');
       // Invalidate workspaces query? Yes, we should! But we don't have it explicitly accessed here.
       window.location.reload(); // Quick way for now, or useQueryClient
-    } catch (e) {
+    } catch (_e) {
       addToast('Failed to create workspace', 'error');
     }
   };

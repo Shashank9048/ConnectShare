@@ -33,7 +33,7 @@ router.get('/', authMiddleware, async (req, res, next) => {
       pendingRequestCount: m.workspace.joinRequests.length,
     }));
 
-    res.json({ success: true, data: { workspaces } });
+    res.json({ success: true, data: workspaces });
   } catch (err) { next(err); }
 });
 
@@ -63,7 +63,7 @@ router.post('/', authMiddleware, async (req, res, next) => {
     });
 
     console.log(`✅ Workspace created: ${workspace.name} by ${req.user.id}`);
-    res.status(201).json({ success: true, data: { workspace } });
+    res.status(201).json({ success: true, data: { ...workspace, workspace } });
   } catch (err) { next(err); }
 });
 

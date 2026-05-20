@@ -3,6 +3,135 @@ const Resource = require('../models/Resource.model');
 const fs = require('fs');
 const zlib = require('zlib');
 
+const LOCAL_FALLBACK_MODEL = 'local-fallback';
+
+const isAIServiceError = (err) => err?.isAIError || err?.status === 503;
+
+const compactWhitespace = (text = '') => text.replace(/\s+/g, ' ').trim();
+
+const normalizeHistory = (conversationHistory = []) => (
+  Array.isArray(conversationHistory)
+    ? conversationHistory
+      .filter((msg) => msg && (msg.role === 'user' || msg.role === 'assistant') && typeof msg.content === 'string')
+      .slice(-6)
+    : []
+);
+
+const splitSentences = (text = '') => compactWhitespace(text)
+  .split(/(?<=[.!?])\s+/)
+  .map((sentence) => sentence.trim())
+  .filter((sentence) => sentence.length > 25);
+
+const pickRelevantSentences = (content, question = '', limit = 5) => {
+  const sentences = splitSentences(content);
+  if (sentences.length === 0) return [];
+
+  const terms = question.toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter((term) => term.length > 3);
+
+  const scored = sentences.map((sentence, index) => {
+    const lower = sentence.toLowerCase();
+    const score = terms.reduce((sum, term) => sum + (lower.includes(term) ? 1 : 0), 0);
+    return { sentence, score, index };
+  });
+
+  const best = scored
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, limit);
+
+  return (best.length ? best : scored.slice(0, limit)).map((item) => item.sentence);
+};
+
+const createLocalSummary = (resource, content) => {
+  if (!content) {
+    const tags = resource.tags?.length ? resource.tags.join(', ') : 'no tags';
+    return `## Summary
+I could not read the full file content, so this fallback summary is based on metadata only.
+
+## Key Points
+- Title: ${resource.title}
+- File type: ${resource.fileType || 'unknown'}
+- Tags: ${tags}
+
+## Quick Takeaway
+This resource is available in the workspace, but its content needs a readable text format or the AI provider to be available for a deeper summary.`;
+  }
+
+  const sentences = splitSentences(content).slice(0, 8);
+  const preview = sentences.length
+    ? sentences.map((sentence) => `- ${sentence}`).join('\n')
+    : `- ${compactWhitespace(content).slice(0, 700)}`;
+
+  return `## Summary
+Gemini is temporarily unavailable, so I created an extractive summary from the readable file text.
+
+## Key Points
+${preview}
+
+## Quick Takeaway
+The resource "${resource.title}" contains readable text and can still be reviewed while the AI provider recovers.`;
+};
+
+const createLocalResourceAnswer = (question, resource, content) => {
+  if (!content) {
+    return `Gemini is temporarily unavailable, and I could not read this file directly. Based on metadata:
+
+- Title: ${resource.title}
+- File type: ${resource.fileType || 'unknown'}
+- Tags: ${resource.tags?.join(', ') || 'none'}
+
+Please try again once the AI provider is available for a deeper answer.`;
+  }
+
+  const snippets = pickRelevantSentences(content, question, 5);
+  return `Gemini is temporarily unavailable, so I searched the readable text locally.
+
+${snippets.map((sentence) => `- ${sentence}`).join('\n')}
+
+This is an extractive answer from "${resource.title}", not a full generative response.`;
+};
+
+const createLocalWorkspaceAnswer = async (question, resources) => {
+  const lines = [];
+
+  for (const resource of resources.slice(0, 8)) {
+    const content = await readResourceContent(resource);
+    const snippets = content ? pickRelevantSentences(content, question, 2) : [];
+    lines.push(`- ${resource.title}${resource.fileType ? ` (${resource.fileType})` : ''}${resource.tags?.length ? ` - tags: ${resource.tags.join(', ')}` : ''}`);
+    snippets.forEach((snippet) => lines.push(`  - ${snippet}`));
+  }
+
+  return `Gemini is temporarily unavailable, so I built a local workspace overview from available metadata and readable text.
+
+${lines.join('\n')}
+
+This fallback can help you keep working, but try again later for a richer AI answer.`;
+};
+
+const createLocalGeneratedNotes = (topic) => `# ${topic}
+
+## Overview
+Gemini is temporarily unavailable, so these are starter notes generated locally. They give you a clean structure to keep working until the AI provider is available again.
+
+## What To Cover
+- Definition and basic explanation
+- Core concepts and vocabulary
+- Step-by-step process or workflow
+- Real examples
+- Common mistakes or misconceptions
+- Quick revision points
+
+## Study Prompts
+- What is the simplest explanation of ${topic}?
+- Why does ${topic} matter?
+- Where is ${topic} used in real projects or real life?
+- What should a beginner remember first?
+
+## Quick Takeaway
+Use this as a placeholder resource and regenerate later for a full AI-written version.`;
+
 const readResourceContent = async (resource) => {
   if (resource.aiContent && resource.aiContent.trim().length > 50) {
     return resource.aiContent;
@@ -35,6 +164,10 @@ const readResourceContent = async (resource) => {
       return fs.readFileSync(resource.fileUrl, 'utf8');
     }
 
+    if (resource.fileType?.includes('pdf')) {
+      return null;
+    }
+
     return null;
   } catch (err) {
     console.error(`Failed to read resource file ${resource.fileUrl}:`, err.message);
@@ -59,13 +192,23 @@ Based on this information, provide:
 Note: The file content could not be read directly (binary format).
 Be helpful but honest about the limitations.`;
 
-    const { text, modelUsed } = await generateWithFallback(metaPrompt, { temperature: 0.5 });
-    return {
-      summary: text,
-      modelUsed,
-      contentRead: false,
-      note: 'Summary based on file metadata only because the file content could not be read.',
-    };
+    try {
+      const { text, modelUsed } = await generateWithFallback(metaPrompt, { temperature: 0.5 });
+      return {
+        summary: text,
+        modelUsed,
+        contentRead: false,
+        note: 'Summary based on file metadata only because the file content could not be read.',
+      };
+    } catch (err) {
+      if (!isAIServiceError(err)) throw err;
+      return {
+        summary: createLocalSummary(resource, null),
+        modelUsed: LOCAL_FALLBACK_MODEL,
+        contentRead: false,
+        note: err.message,
+      };
+    }
   }
 
   const truncated = content.length > 12000
@@ -103,17 +246,28 @@ Provide a well-structured summary in this exact format:
 
 Be accurate, thorough, and base your summary ONLY on the actual content provided.`;
 
-  const { text, modelUsed } = await generateWithFallback(prompt, {
-    temperature: 0.3,
-    maxTokens: 4096,
-  });
+  try {
+    const { text, modelUsed } = await generateWithFallback(prompt, {
+      temperature: 0.3,
+      maxTokens: 4096,
+    });
 
-  return {
-    summary: text,
-    modelUsed,
-    contentRead: true,
-    contentLength: content.length,
-  };
+    return {
+      summary: text,
+      modelUsed,
+      contentRead: true,
+      contentLength: content.length,
+    };
+  } catch (err) {
+    if (!isAIServiceError(err)) throw err;
+    return {
+      summary: createLocalSummary(resource, content),
+      modelUsed: LOCAL_FALLBACK_MODEL,
+      contentRead: true,
+      contentLength: content.length,
+      note: err.message,
+    };
+  }
 };
 
 const chatAboutResource = async (question, resource, conversationHistory = []) => {
@@ -129,7 +283,7 @@ Type: ${resource.fileType || 'unknown'}
 Tags: ${resource.tags?.join(', ') || 'none'}
 Note: File content could not be read. Answer based on available metadata.`;
 
-  const historyText = conversationHistory.slice(-6).map((msg) =>
+  const historyText = normalizeHistory(conversationHistory).map((msg) =>
     `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`
   ).join('\n\n');
 
@@ -147,12 +301,22 @@ Instructions:
 - Use bullet points or numbered lists when helpful
 - If giving a factual answer, be precise`;
 
-  const { text, modelUsed } = await generateWithFallback(prompt, {
-    temperature: 0.3,
-    maxTokens: 2048,
-  });
+  try {
+    const { text, modelUsed } = await generateWithFallback(prompt, {
+      temperature: 0.3,
+      maxTokens: 2048,
+    });
 
-  return { answer: text, modelUsed, contentRead: !!content };
+    return { answer: text, modelUsed, contentRead: !!content };
+  } catch (err) {
+    if (!isAIServiceError(err)) throw err;
+    return {
+      answer: createLocalResourceAnswer(question, resource, content),
+      modelUsed: LOCAL_FALLBACK_MODEL,
+      contentRead: !!content,
+      note: err.message,
+    };
+  }
 };
 
 const chatAboutWorkspace = async (question, workspaceId, conversationHistory = []) => {
@@ -181,7 +345,7 @@ const chatAboutWorkspace = async (question, workspaceId, conversationHistory = [
     `[RESOURCE ${index + 1}: "${source.title}"]\n${source.content}`
   ).join('\n\n---\n\n');
 
-  const historyText = conversationHistory.slice(-6).map((msg) =>
+  const historyText = normalizeHistory(conversationHistory).map((msg) =>
     `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`
   ).join('\n\n');
 
@@ -200,16 +364,26 @@ Instructions:
 - If asking about something not in any resource, say so clearly
 - Be helpful, accurate, and concise`;
 
-  const { text, modelUsed } = await generateWithFallback(prompt, {
-    temperature: 0.3,
-    maxTokens: 2048,
-  });
+  try {
+    const { text, modelUsed } = await generateWithFallback(prompt, {
+      temperature: 0.3,
+      maxTokens: 2048,
+    });
 
-  return {
-    answer: text,
-    modelUsed,
-    sourcesUsed: sourceContents.map((source) => source.title),
-  };
+    return {
+      answer: text,
+      modelUsed,
+      sourcesUsed: sourceContents.map((source) => source.title),
+    };
+  } catch (err) {
+    if (!isAIServiceError(err)) throw err;
+    return {
+      answer: await createLocalWorkspaceAnswer(question, resources),
+      modelUsed: LOCAL_FALLBACK_MODEL,
+      sourcesUsed: sourceContents.map((source) => source.title),
+      note: err.message,
+    };
+  }
 };
 
 const generateContent = async (topic, type = 'notes') => {
@@ -222,43 +396,52 @@ Create well-structured, detailed study notes in Markdown format:
 
 # ${topic}
 
-## Overview
+## 📌 Overview
 (Clear 2-3 sentence introduction explaining what this is and why it matters)
 
-## Core Concepts
+## 🧠 Core Concepts
 (Cover every major concept. For each one:)
 ### Concept Name
 **What it is:** Clear definition
 **How it works:** Step-by-step if needed
 **Example:** Concrete example
 
-## Key Points
+## 📝 Key Points
 - (10-12 important bullet points: specific and factual)
 
-## How It Works In Practice
+## 💡 How It Works (In Practice)
 (Real-world application or step-by-step walkthrough)
 
-## Common Mistakes to Avoid
+## ⚠️ Common Mistakes to Avoid
 - Mistake 1 and why it happens
 - Mistake 2 and why it happens
 - Mistake 3 and why it happens
 
-## Quick Reference
+## 🔑 Quick Reference
 | Term | Meaning |
 |------|---------|
 (8-10 key terms with concise definitions)
 
-## Summary
+## ✅ Summary
 (3-4 sentence recap of everything covered)
 
 Be thorough, accurate, and educational. Use **bold** for key terms.
 Aim for 800-1200 words of genuine educational content.`;
 
-  const { text, modelUsed } = await generateWithFallback(notesPrompt, {
-    temperature: 0.6,
-    maxTokens: 8192,
-  });
-  return { content: text, modelUsed };
+  try {
+    const { text, modelUsed } = await generateWithFallback(notesPrompt, {
+      temperature: 0.6,
+      maxTokens: 8192,
+    });
+    return { content: text, modelUsed };
+  } catch (err) {
+    if (!isAIServiceError(err)) throw err;
+    return {
+      content: createLocalGeneratedNotes(topic),
+      modelUsed: LOCAL_FALLBACK_MODEL,
+      note: err.message,
+    };
+  }
 };
 
 const generateEmbedding = async (text) => {
@@ -304,6 +487,41 @@ Only trusted sources. Sort by relevanceScore descending.`;
   }
 };
 
+const cosineSimilarity = (a, b) => {
+  if (!a?.length || !b?.length || a.length !== b.length) return 0;
+  const dot = a.reduce((sum, value, index) => sum + value * b[index], 0);
+  const magnitudeA = Math.sqrt(a.reduce((sum, value) => sum + value * value, 0));
+  const magnitudeB = Math.sqrt(b.reduce((sum, value) => sum + value * value, 0));
+  return magnitudeA && magnitudeB ? dot / (magnitudeA * magnitudeB) : 0;
+};
+
+const semanticSearch = async (query, workspaceId) => {
+  const queryVector = await generateEmbedding(query);
+  const filter = workspaceId ? { workspaceId } : {};
+  const resources = await Resource.find(filter).lean();
+
+  const scored = resources
+    .map((resource) => ({
+      ...resource,
+      score: resource.embedding?.length ? cosineSimilarity(queryVector, resource.embedding) : 0,
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+
+  let summary = `Found ${scored.length} resource(s).`;
+  if (scored.length > 0) {
+    try {
+      const { text } = await generateWithFallback(
+        `User searched: "${query}". Results: ${scored.map((resource) => resource.title).join(', ')}. Write one helpful summary sentence.`,
+        { temperature: 0.3, maxTokens: 100 }
+      );
+      summary = text;
+    } catch {}
+  }
+
+  return { resources: scored, summary };
+};
+
 module.exports = {
   summarizeResource,
   chatAboutResource,
@@ -311,5 +529,6 @@ module.exports = {
   generateContent,
   generateEmbedding,
   webSearch,
+  semanticSearch,
   readResourceContent,
 };

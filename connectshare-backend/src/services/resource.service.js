@@ -10,8 +10,6 @@ const prisma = require('../config/db.prisma');
 const Resource = require('../models/Resource.model');
 const eventBus = require('../events/eventBus');
 
-const EMBEDDING_MODEL = 'text-embedding-004';
-
 const buildEmbeddingText = ({ title, tags }) => {
   const tagStr = Array.isArray(tags) ? tags.join(' ') : (tags || '');
   return `${title} ${tagStr}`.trim();

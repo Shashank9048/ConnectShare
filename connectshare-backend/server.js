@@ -52,7 +52,7 @@ require('./src/sockets/chat.socket')(io);
 app.use('/api/v1/auth', require('./src/routes/auth.routes'));
 app.use('/api/v1/resources', require('./src/routes/resource.routes'));
 app.use('/api/v1/workspaces', require('./src/routes/workspace.routes'));
-try { app.use('/api/v1/ai', require('./src/routes/ai.routes')); } catch(e){} // Optional until created
+app.use('/api/v1/ai', require('./src/routes/ai.routes'));
 app.use('/api/v1/messages', require('./src/routes/message.routes'));
 try { app.use('/api/v1/activity', require('./src/routes/activity.routes')); } catch(e){}
 try { app.use('/api/v1/stats', require('./src/routes/stats.routes')); } catch(e){}
@@ -84,6 +84,8 @@ const startServer = async () => {
   });
 };
 
-startServer().catch(err => { console.error(err); process.exit(1); });
+if (require.main === module) {
+  startServer().catch(err => { console.error(err); process.exit(1); });
+}
 
-module.exports = { app, httpServer };
+module.exports = { app, httpServer, startServer };
