@@ -193,8 +193,6 @@ export default function Workspace() {
                     <ResourceCard 
                       resource={res} 
                       onClick={() => setViewingResource(res)}
-                      onSummarize={(resourceId) => openAIPanel('Summarize', resourceId)}
-                      onAskAI={(resourceId) => openAIPanel('Chat', resourceId)}
                       onDelete={async (id) => {
                         try {
                           await api.delete(`/api/v1/resources/${id}`);

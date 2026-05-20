@@ -20,8 +20,6 @@ interface ResourceProps {
   };
   onClick?: () => void;
   onDelete?: (id: string) => void;
-  onSummarize?: (resourceId: string) => void;
-  onAskAI?: (resourceId: string) => void;
 }
 
 const getHashColor = (str: string) => {
@@ -33,7 +31,7 @@ const getHashColor = (str: string) => {
   return `hsl(${hue}, 70%, 40%)`;
 };
 
-export const ResourceCard = ({ resource, onClick, onDelete, onSummarize, onAskAI }: ResourceProps) => {
+export const ResourceCard = ({ resource, onClick, onDelete }: ResourceProps) => {
   const { user } = useAuthStore();
   const [showConfirm, setShowConfirm] = useState(false);
 
@@ -53,11 +51,7 @@ export const ResourceCard = ({ resource, onClick, onDelete, onSummarize, onAskAI
     setShowConfirm(true);
   };
 
-  const handleQuickAction = (e: React.MouseEvent, action: 'summarize' | 'ask') => {
-    e.stopPropagation();
-    if (action === 'summarize') onSummarize?.(resource._id);
-    if (action === 'ask') onAskAI?.(resource._id);
-  };
+
 
   return (
     <>
@@ -93,20 +87,7 @@ export const ResourceCard = ({ resource, onClick, onDelete, onSummarize, onAskAI
           )}
         </div>
 
-        <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button
-            onClick={(event) => handleQuickAction(event, 'summarize')}
-            className="flex-1 rounded-lg border border-border-color bg-bg-secondary px-3 py-2 text-xs font-bold text-text-primary hover:border-primary hover:text-primary"
-          >
-            📄 Summarize
-          </button>
-          <button
-            onClick={(event) => handleQuickAction(event, 'ask')}
-            className="flex-1 rounded-lg border border-border-color bg-bg-secondary px-3 py-2 text-xs font-bold text-text-primary hover:border-primary hover:text-primary"
-          >
-            💬 Ask AI
-          </button>
-        </div>
+
 
         <div className="flex flex-wrap gap-2 flex-1 items-start">
           {resource.tags.slice(0, 4).map(tag => (
