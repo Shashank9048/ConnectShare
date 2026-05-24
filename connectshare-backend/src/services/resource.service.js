@@ -9,6 +9,7 @@ const { getEmbeddingModel, genAI } = require('../config/gemini');
 const prisma = require('../config/db.prisma');
 const Resource = require('../models/Resource.model');
 const eventBus = require('../events/eventBus');
+const { ensureUploadDir, resolveResourcePath } = require('../utils/storagePaths');
 
 const buildEmbeddingText = ({ title, tags }) => {
   const tagStr = Array.isArray(tags) ? tags.join(' ') : (tags || '');
@@ -38,8 +39,7 @@ const parseTags = (tags) => (
  * Upload resource - compress with zlib, embed with Gemini, save to MongoDB
  */
 const uploadResource = async ({ file, title, tags, workspaceId, userId }) => {
-  const uploadDir = path.join(process.cwd(), process.env.UPLOAD_DIR || 'uploads');
-  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+  const uploadDir = ensureUploadDir();
 
   const safeFilename = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
   const outputPath = path.join(uploadDir, `${Date.now()}-${safeFilename}.gz`);
@@ -179,9 +179,10 @@ const deleteResource = async (id, userId, userRole) => {
     throw err;
   }
 
-  if (resource.fileUrl && fs.existsSync(resource.fileUrl)) {
-    fs.unlinkSync(resource.fileUrl);
-    console.log(`[DELETE] Removed file: ${resource.fileUrl}`);
+  const resourcePath = resolveResourcePath(resource.fileUrl);
+  if (resourcePath && fs.existsSync(resourcePath)) {
+    fs.unlinkSync(resourcePath);
+    console.log(`[DELETE] Removed file: ${resourcePath}`);
   }
 
   await Resource.findByIdAndDelete(id);

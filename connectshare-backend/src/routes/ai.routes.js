@@ -12,9 +12,9 @@ const Resource = require('../models/Resource.model');
 const eventBus = require('../events/eventBus');
 const fs = require('fs');
 const path = require('path');
+const { ensureUploadDir } = require('../utils/storagePaths');
 
-const uploadsDir = path.join(__dirname, '../../uploads');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+const uploadsDir = ensureUploadDir();
 
 const requestId = () => `ai-route-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 

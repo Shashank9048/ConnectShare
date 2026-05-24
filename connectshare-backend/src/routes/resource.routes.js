@@ -1,26 +1,26 @@
 // ============================================================
-// resource.routes.js — Resource Upload & CRUD Routes
+// resource.routes.js - Resource Upload & CRUD Routes
 // ============================================================
 const express = require('express');
 const { body } = require('express-validator');
 const multer = require('multer');
 const fs = require('fs');
-const path = require('path');
 const { upload, list, getById, remove, download } = require('../controllers/resource.controller');
 const authMiddleware = require('../middleware/auth.middleware');
 const { roleMiddleware } = require('../middleware/role.middleware');
+const prisma = require('../config/db.prisma');
+const Resource = require('../models/Resource.model');
+const { ensureUploadDir, resolveResourcePath } = require('../utils/storagePaths');
 
 const router = express.Router();
+const ROLE_HIERARCHY = { VIEWER: 1, MEMBER: 2, ADMIN: 3 };
 
-const uploadDir = path.join(__dirname, '../../uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+ensureUploadDir();
 
-// Multer — memory storage (buffer passed to service for zlib compression)
+// Multer memory storage: buffer is passed to the service for zlib compression.
 const memUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
+  limits: { fileSize: 50 * 1024 * 1024 },
 });
 
 const uploadValidation = [
@@ -28,79 +28,84 @@ const uploadValidation = [
   body('workspaceId').notEmpty().withMessage('workspaceId is required'),
 ];
 
-// All resource routes require auth
+const resourceRoleMiddleware = (requiredRole) => async (req, res, next) => {
+  try {
+    const resource = await Resource.findById(req.params.id);
+    if (!resource) {
+      return res.status(404).json({ success: false, error: 'Resource not found', code: 404 });
+    }
+
+    const membership = await prisma.workspaceMember.findFirst({
+      where: { workspaceId: resource.workspaceId, userId: req.user.id },
+      select: { role: true },
+    });
+
+    const requiredLevel = ROLE_HIERARCHY[requiredRole] ?? 999;
+    const memberLevel = ROLE_HIERARCHY[membership?.role] ?? 0;
+
+    if (memberLevel < requiredLevel) {
+      return res.status(403).json({ success: false, error: 'Insufficient permissions', code: 403 });
+    }
+
+    req.workspaceRole = membership.role;
+    req.resource = resource;
+    next();
+  } catch (err) {
+    next(err);
+  }
+};
+
 router.use(authMiddleware);
 
 router.post('/upload', roleMiddleware('MEMBER'), memUpload.single('file'), uploadValidation, upload);
 router.get('/', roleMiddleware('VIEWER'), list);
-router.get('/:id', roleMiddleware('VIEWER'), getById);
-const Resource = require('../models/Resource.model');
+router.get('/:id/download', resourceRoleMiddleware('VIEWER'), download);
+router.get('/:id', resourceRoleMiddleware('VIEWER'), getById);
 
-router.get('/:id/download', roleMiddleware('VIEWER'), async (req, res, next) => {
+router.get('/:id/preview', resourceRoleMiddleware('VIEWER'), async (req, res, next) => {
   try {
-    const resource = await Resource.findById(req.params.id);
-    if (!resource) return res.status(404).json({ success: false, error: 'Not found' });
-    if (!fs.existsSync(resource.fileUrl)) {
-      return res.status(404).json({ success: false, error: 'File not found on disk' });
-    }
+    const resource = req.resource;
 
-    // Clean filename for download
-    const ext = resource.compressed ? path.extname(resource.fileUrl.replace('.gz', '')) : path.extname(resource.fileUrl);
-    const cleanName = resource.title.replace(/[^a-zA-Z0-9.-]/g, '_') + (ext || '.txt');
-    
-    res.setHeader('Content-Disposition', `attachment; filename="${cleanName}"`);
-    res.setHeader('Content-Type', resource.fileType || 'application/octet-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-
-    if (resource.compressed) {
-      // Decompress gzip → send raw file (NOT .gz to user)
-      const zlib = require('zlib');
-      const gunzip = zlib.createGunzip();
-      const stream = fs.createReadStream(resource.fileUrl);
-      stream.on('error', (err) => {
-        console.error('Stream error:', err);
-        res.status(500).json({ success: false, error: 'Download failed' });
-      });
-      stream.pipe(gunzip).pipe(res);
-    } else {
-      res.download(resource.fileUrl, cleanName);
-    }
-  } catch (err) { next(err); }
-});
-
-// Preview endpoint — serves file for inline display
-router.get('/:id/preview', roleMiddleware('VIEWER'), async (req, res, next) => {
-  try {
-    const resource = await Resource.findById(req.params.id);
-    if (!resource) return res.status(404).json({ success: false, error: 'Not found' });
-
-    // Return aiContent directly if available (fastest for AI resources)
     if (resource.aiContent) {
       return res.json({ success: true, data: { content: resource.aiContent, type: 'markdown' } });
     }
 
-    if (!fs.existsSync(resource.fileUrl)) {
+    // Use robust path resolution with fallback directory scan
+    const { candidatePathsForResource, uploadDir } = require('../utils/storagePaths');
+    const candidates = candidatePathsForResource(resource.fileUrl);
+    let resourcePath = candidates.find((c) => fs.existsSync(c));
+
+    if (!resourcePath && resource.fileUrl) {
+      const storedBasename = require('path').basename(resource.fileUrl);
+      const uploadsFiles = fs.existsSync(uploadDir) ? fs.readdirSync(uploadDir) : [];
+      const match = uploadsFiles.find((f) => f === storedBasename || f === storedBasename + '.gz' || f.replace(/\.gz$/i, '') === storedBasename.replace(/\.gz$/i, ''));
+      if (match) resourcePath = require('path').join(uploadDir, match);
+    }
+
+    if (!resourcePath || !fs.existsSync(resourcePath)) {
       return res.json({ success: true, data: { content: null, type: 'unavailable' } });
     }
 
-    if (resource.compressed) {
+    if (resource.compressed || resourcePath.endsWith('.gz')) {
       const zlib = require('zlib');
-      const buffer = fs.readFileSync(resource.fileUrl);
+      const buffer = fs.readFileSync(resourcePath);
       const content = zlib.gunzipSync(buffer).toString('utf8');
       return res.json({ success: true, data: { content, type: resource.fileType || 'text' } });
-    } else {
-      if (resource.fileType?.startsWith('image/')) {
-        // Send image as base64
-        const buffer = fs.readFileSync(resource.fileUrl);
-        const base64 = buffer.toString('base64');
-        return res.json({ success: true, data: { content: base64, type: resource.fileType } });
-      }
-      const content = fs.readFileSync(resource.fileUrl, 'utf8');
-      return res.json({ success: true, data: { content, type: resource.fileType || 'text' } });
     }
-  } catch (err) { next(err); }
+
+    if (resource.fileType?.startsWith('image/')) {
+      const buffer = fs.readFileSync(resourcePath);
+      const base64 = buffer.toString('base64');
+      return res.json({ success: true, data: { content: base64, type: resource.fileType } });
+    }
+
+    const content = fs.readFileSync(resourcePath, 'utf8');
+    return res.json({ success: true, data: { content, type: resource.fileType || 'text' } });
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.delete('/:id', remove); // ownership/ADMIN check is inside service
+router.delete('/:id', remove);
 
 module.exports = router;

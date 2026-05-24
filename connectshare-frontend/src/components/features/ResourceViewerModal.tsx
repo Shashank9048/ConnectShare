@@ -1,5 +1,6 @@
-import { motion } from 'framer-motion';
-import { X, ExternalLink, Download, FileText, Brain } from 'lucide-react';
+import { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { X, ExternalLink, Download, FileText, Brain, AlertTriangle, Loader2 } from 'lucide-react';
 import { useAuthStore } from '../../store/auth.store';
 
 interface ResourceViewerModalProps {
@@ -9,8 +10,54 @@ interface ResourceViewerModalProps {
 
 export const ResourceViewerModal = ({ resource, onClose }: ResourceViewerModalProps) => {
   const token = useAuthStore(state => state.accessToken);
-  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001/api/v1';
-  const downloadUrl = resource._id ? `${baseUrl}/resources/${resource._id}/download?token=${token}` : '';
+  const apiOrigin = (import.meta.env.VITE_API_URL || 'http://localhost:5001').replace(/\/api\/v1\/?$/, '').replace(/\/$/, '');
+  const downloadUrl = resource._id
+    ? `${apiOrigin}/api/v1/resources/${resource._id}/download?token=${encodeURIComponent(token || '')}`
+    : '';
+
+  const [downloadState, setDownloadState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!downloadUrl) return;
+
+    setDownloadState('loading');
+    setErrorMsg('');
+
+    try {
+      const res = await fetch(downloadUrl);
+      if (!res.ok) {
+        let msg = 'File no longer exists on server';
+        try {
+          const json = await res.json();
+          msg = json.error || msg;
+        } catch {}
+        setDownloadState('error');
+        setErrorMsg(msg);
+        return;
+      }
+
+      // Trigger browser download from the blob
+      const blob = await res.blob();
+      const contentDisposition = res.headers.get('Content-Disposition') || '';
+      const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/);
+      const filename = filenameMatch?.[1] || resource.title || 'download';
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setDownloadState('idle');
+    } catch (err) {
+      setDownloadState('error');
+      setErrorMsg('Network error — could not reach the server. Please try again.');
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 md:p-8">
@@ -83,22 +130,63 @@ export const ResourceViewerModal = ({ resource, onClose }: ResourceViewerModalPr
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-20 text-center space-y-6">
-              <div className="w-20 h-20 rounded-full bg-success/10 flex items-center justify-center text-success">
-                <Download size={40} />
-              </div>
+              <AnimatePresence mode="wait">
+                {downloadState === 'error' ? (
+                  <motion.div
+                    key="error"
+                    initial={{ scale: 0.8, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.8, opacity: 0 }}
+                    className="w-20 h-20 rounded-full bg-red-500/10 flex items-center justify-center text-red-400"
+                  >
+                    <AlertTriangle size={40} />
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="download"
+                    initial={{ scale: 0.8, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.8, opacity: 0 }}
+                    className="w-20 h-20 rounded-full bg-success/10 flex items-center justify-center text-success"
+                  >
+                    <Download size={40} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               <div>
-                <h3 className="text-2xl font-bold text-text-primary mb-2">Downloadable File</h3>
-                <p className="text-text-muted max-w-md mx-auto">This is an uploaded file. Due to compression, it must be downloaded to be viewed.</p>
+                {downloadState === 'error' ? (
+                  <>
+                    <h3 className="text-2xl font-bold text-red-400 mb-2">Download Failed</h3>
+                    <p className="text-text-muted max-w-md mx-auto">{errorMsg}</p>
+                    <button
+                      onClick={() => setDownloadState('idle')}
+                      className="mt-3 text-sm text-primary hover:underline"
+                    >
+                      Try again
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <h3 className="text-2xl font-bold text-text-primary mb-2">Downloadable File</h3>
+                    <p className="text-text-muted max-w-md mx-auto">This is an uploaded file. Due to compression, it must be downloaded to be viewed.</p>
+                  </>
+                )}
               </div>
-              <a 
-                href={downloadUrl} 
-                download
-                target="_blank"
-                rel="noreferrer"
-                className="bg-success hover:bg-success/80 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-success/20 transition-all flex items-center gap-2"
-              >
-                Download File <Download size={18} />
-              </a>
+
+              {downloadState !== 'error' && (
+                <button
+                  onClick={handleDownload}
+                  disabled={downloadState === 'loading'}
+                  className="bg-success hover:bg-success/80 disabled:opacity-60 disabled:cursor-not-allowed text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-success/20 transition-all flex items-center gap-2"
+                >
+                  {downloadState === 'loading' ? (
+                    <><Loader2 size={18} className="animate-spin" /> Downloading...</>
+                  ) : (
+                    <>Download File <Download size={18} /></>
+                  )}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -106,3 +194,4 @@ export const ResourceViewerModal = ({ resource, onClose }: ResourceViewerModalPr
     </div>
   );
 };
+

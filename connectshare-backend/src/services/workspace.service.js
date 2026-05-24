@@ -112,12 +112,16 @@ const deleteWorkspace = async (workspaceId) => {
   const Message = require('../models/Message.model');
   const ActivityLog = require('../models/ActivityLog.model');
   const fs = require('fs');
+  const { resolveResourcePath } = require('../utils/storagePaths');
 
   // Delete all resource files from disk before removing DB records
   const resources = await Resource.find({ workspaceId }, 'fileUrl').lean();
   for (const r of resources) {
     if (r.fileUrl) {
-      try { fs.unlinkSync(r.fileUrl); } catch (_) { /* file may not exist */ }
+      try {
+        const resourcePath = resolveResourcePath(r.fileUrl);
+        if (fs.existsSync(resourcePath)) fs.unlinkSync(resourcePath);
+      } catch (_) { /* file may not exist */ }
     }
   }
 

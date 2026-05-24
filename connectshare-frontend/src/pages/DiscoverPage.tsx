@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Globe, Users, Loader2, Search, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -37,20 +37,20 @@ export const DiscoverPage = () => {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  useEffect(() => {
-    fetchPublicWorkspaces();
-  }, [debouncedSearch]);
-
-  const fetchPublicWorkspaces = async () => {
+  const fetchPublicWorkspaces = useCallback(async () => {
     try {
       const res = await api.get(`/api/v1/workspaces/discover?q=${debouncedSearch}`);
       setWorkspaces(res.data.data.workspaces || res.data.data);
-    } catch (_e) {
+    } catch {
       addToast('Failed to load public workspaces', 'error');
     } finally {
       setLoading(false);
     }
-  };
+  }, [addToast, debouncedSearch]);
+
+  useEffect(() => {
+    fetchPublicWorkspaces();
+  }, [fetchPublicWorkspaces]);
 
   const openJoinModal = (ws: PublicWorkspace) => {
     setSelectedWs(ws);

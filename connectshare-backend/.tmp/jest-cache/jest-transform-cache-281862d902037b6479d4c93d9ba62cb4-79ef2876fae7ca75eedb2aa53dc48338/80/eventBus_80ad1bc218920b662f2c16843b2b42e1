@@ -1,0 +1,11 @@
+a94a8dd4a9b9a4fb6be9add7997e7d14
+// ============================================================
+// eventBus.js — Central EventEmitter for Activity Logging
+// ============================================================
+const EventEmitter = require('events');
+const eventBus = new EventEmitter();
+
+// Increase max listeners to avoid memory leak warnings
+eventBus.setMaxListeners(20);
+module.exports = eventBus;
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJuYW1lcyI6WyJFdmVudEVtaXR0ZXIiLCJyZXF1aXJlIiwiZXZlbnRCdXMiLCJzZXRNYXhMaXN0ZW5lcnMiLCJtb2R1bGUiLCJleHBvcnRzIl0sInNvdXJjZXMiOlsiZXZlbnRCdXMuanMiXSwic291cmNlc0NvbnRlbnQiOlsiLy8gPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09XG4vLyBldmVudEJ1cy5qcyDigJQgQ2VudHJhbCBFdmVudEVtaXR0ZXIgZm9yIEFjdGl2aXR5IExvZ2dpbmdcbi8vID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PVxuY29uc3QgRXZlbnRFbWl0dGVyID0gcmVxdWlyZSgnZXZlbnRzJyk7XG5cbmNvbnN0IGV2ZW50QnVzID0gbmV3IEV2ZW50RW1pdHRlcigpO1xuXG4vLyBJbmNyZWFzZSBtYXggbGlzdGVuZXJzIHRvIGF2b2lkIG1lbW9yeSBsZWFrIHdhcm5pbmdzXG5ldmVudEJ1cy5zZXRNYXhMaXN0ZW5lcnMoMjApO1xuXG5tb2R1bGUuZXhwb3J0cyA9IGV2ZW50QnVzO1xuIl0sIm1hcHBpbmdzIjoiQUFBQTtBQUNBO0FBQ0E7QUFDQSxNQUFNQSxZQUFZLEdBQUdDLE9BQU8sQ0FBQyxRQUFRLENBQUM7QUFFdEMsTUFBTUMsUUFBUSxHQUFHLElBQUlGLFlBQVksQ0FBQyxDQUFDOztBQUVuQztBQUNBRSxRQUFRLENBQUNDLGVBQWUsQ0FBQyxFQUFFLENBQUM7QUFFNUJDLE1BQU0sQ0FBQ0MsT0FBTyxHQUFHSCxRQUFRIiwiaWdub3JlTGlzdCI6W119

@@ -117,6 +117,20 @@ describe('POST /api/v1/resources/upload', () => {
   });
 });
 
+describe('GET /api/v1/resources/:id/download', () => {
+  it('should download and decompress an uploaded file for a workspace member', async () => {
+    if (!accessToken || !resourceId) return;
+
+    const res = await request(app)
+      .get(`/api/v1/resources/${resourceId}/download`)
+      .set('Authorization', `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-disposition']).toContain('attachment;');
+    expect(res.text).toBe('Hello ConnectShare! '.repeat(100));
+  });
+});
+
 describe('DELETE /api/v1/resources/:id', () => {
   it('should delete owned resource', async () => {
     if (!accessToken || !resourceId) return;

@@ -7,13 +7,10 @@ const path = require('path');
 const fs = require('fs');
 const zlib = require('zlib');
 const { v4: uuidv4 } = require('uuid');
-
-const UPLOAD_DIR = path.join(process.cwd(), process.env.UPLOAD_DIR || 'uploads');
+const { uploadDir: UPLOAD_DIR, ensureUploadDir } = require('./storagePaths');
 
 // Ensure upload dir exists
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-}
+ensureUploadDir();
 
 // ─── Multer: store to temp location first ───────────────────
 const storage = multer.diskStorage({

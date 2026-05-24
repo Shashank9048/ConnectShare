@@ -10,6 +10,8 @@ const {
   getTagsForWorkspace,
 } = require('../services/resource.service');
 const path = require('path');
+const fs = require('fs');
+const { resolveResourcePath } = require('../utils/storagePaths');
 
 // POST /api/v1/resources/upload
 const upload = async (req, res, next) => {
@@ -80,45 +82,74 @@ const remove = async (req, res, next) => {
 // GET /api/v1/resources/:id/download
 const download = async (req, res, next) => {
   try {
-    const resource = await getResourceById(req.params.id);
+    const resource = req.resource || await getResourceById(req.params.id);
     if (!resource || !resource.fileUrl) {
       return res.status(404).json({ success: false, error: 'File not found' });
     }
 
-    const fs = require('fs');
-    if (!fs.existsSync(resource.fileUrl)) {
-      return res.status(404).json({ success: false, error: 'File no longer exists on server' });
+    // ── Resolve the physical file path ───────────────────────────────────────
+    const { candidatePathsForResource, uploadDir } = require('../utils/storagePaths');
+    const candidates = candidatePathsForResource(resource.fileUrl);
+    console.log(`[DOWNLOAD] Resource ${resource._id} — stored fileUrl: ${resource.fileUrl}`);
+    console.log(`[DOWNLOAD] Candidate paths: ${JSON.stringify(candidates)}`);
+
+    let resourcePath = candidates.find((c) => fs.existsSync(c));
+
+    // Last-resort: scan uploads dir for a file whose name starts with the same
+    // timestamp-stem (handles cases where fileUrl stored an old absolute path).
+    if (!resourcePath) {
+      const storedBasename = path.basename(resource.fileUrl);
+      const uploadsFiles = fs.existsSync(uploadDir) ? fs.readdirSync(uploadDir) : [];
+      const match = uploadsFiles.find((f) => f === storedBasename || f === storedBasename + '.gz' || f.replace(/\.gz$/i, '') === storedBasename.replace(/\.gz$/i, ''));
+      if (match) {
+        resourcePath = path.join(uploadDir, match);
+        console.log(`[DOWNLOAD] Found via uploads scan: ${resourcePath}`);
+      }
     }
 
-    const originalFilename = path.basename(resource.fileUrl).replace('.gz', '');
-    
-    // Determine content type safely
+    if (!resourcePath || !fs.existsSync(resourcePath)) {
+      console.error(`[DOWNLOAD] File not found for resource ${resource._id}. Tried: ${JSON.stringify(candidates)}`);
+      return res.status(404).json({
+        success: false,
+        error: 'File no longer exists on server',
+        debug: process.env.NODE_ENV !== 'production' ? { fileUrl: resource.fileUrl, tried: candidates } : undefined,
+      });
+    }
+
+    console.log(`[DOWNLOAD] Serving file: ${resourcePath}`);
+
+    // ── Build download filename ───────────────────────────────────────────────
+    const storedFilename = path.basename(resourcePath).replace(/\.gz$/i, '');
+    const ext = path.extname(storedFilename);
+    const safeTitle = resource.title.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const originalFilename = `${safeTitle}${ext || '.txt'}`;
+
+    // ── Determine content type safely ─────────────────────────────────────────
     let contentType = resource.fileType || 'application/octet-stream';
     if (contentType === 'application/gzip' && !originalFilename.endsWith('.gz')) {
-      // Best guess for common extensions
       if (originalFilename.endsWith('.md')) contentType = 'text/markdown';
       else if (originalFilename.endsWith('.pdf')) contentType = 'application/pdf';
       else if (originalFilename.endsWith('.txt')) contentType = 'text/plain';
+      else if (originalFilename.endsWith('.docx')) contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      else if (originalFilename.endsWith('.pptx')) contentType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      else contentType = 'application/octet-stream';
     }
 
-    res.setHeader('Content-Type', contentType);
-    // Use inline for previewing PDFs/text, attachment for downloads
     const disposition = req.query.preview === 'true' ? 'inline' : 'attachment';
+    res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `${disposition}; filename="${originalFilename}"`);
 
-    const readStream = fs.createReadStream(resource.fileUrl);
+    // ── Stream the file, decompressing if needed ──────────────────────────────
+    const isCompressed = resource.compressed || resourcePath.endsWith('.gz');
+    const readStream = fs.createReadStream(resourcePath);
+    readStream.on('error', (err) => next(err));
 
-    if (resource.compressed || resource.fileUrl.endsWith('.gz')) {
+    if (isCompressed) {
       const zlib = require('zlib');
       const gunzip = zlib.createGunzip();
-      
-      // Handle errors on stream to avoid crashing
-      readStream.on('error', err => next(err));
-      gunzip.on('error', err => next(err));
-      
+      gunzip.on('error', (err) => next(err));
       readStream.pipe(gunzip).pipe(res);
     } else {
-      readStream.on('error', err => next(err));
       readStream.pipe(res);
     }
   } catch (err) {

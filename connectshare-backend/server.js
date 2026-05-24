@@ -6,8 +6,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
-const path = require('path');
-const fs = require('fs');
+const { ensureUploadDir } = require('./src/utils/storagePaths');
 
 const app = express();
 const httpServer = http.createServer(app); // ← NOT app.listen
@@ -36,10 +35,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // Uploads directory
-const uploadDir = path.join(__dirname, process.env.UPLOAD_DIR || 'uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+const uploadDir = ensureUploadDir();
 app.use('/uploads', express.static(uploadDir));
 
 // Initialize events

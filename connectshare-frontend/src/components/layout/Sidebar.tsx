@@ -20,14 +20,15 @@ export const Sidebar = () => {
     queryKey: ['workspaces'],
     queryFn: async () => {
       const res = await api.get('/api/v1/workspaces');
-      return res.data.data.workspaces || res.data.data || [];
+      const payload = res.data.data;
+      return Array.isArray(payload) ? payload : payload?.workspaces || [];
     }
   });
 
   const handleLogout = async () => {
     try {
       await api.post('/api/v1/auth/logout');
-    } catch (_e) {
+    } catch {
       // ignore
     }
     logout();

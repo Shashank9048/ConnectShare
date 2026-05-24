@@ -2,6 +2,7 @@ const { generateWithFallback, getEmbeddingModel } = require('../config/gemini');
 const Resource = require('../models/Resource.model');
 const fs = require('fs');
 const zlib = require('zlib');
+const { resolveResourcePath } = require('../utils/storagePaths');
 
 const LOCAL_FALLBACK_MODEL = 'local-fallback';
 
@@ -140,13 +141,14 @@ const readResourceContent = async (resource) => {
   if (!resource.fileUrl) return null;
 
   try {
-    if (!fs.existsSync(resource.fileUrl)) {
+    const resourcePath = resolveResourcePath(resource.fileUrl);
+    if (!fs.existsSync(resourcePath)) {
       console.warn(`File not found on disk: ${resource.fileUrl}`);
       return null;
     }
 
     if (resource.compressed) {
-      const buffer = fs.readFileSync(resource.fileUrl);
+      const buffer = fs.readFileSync(resourcePath);
       return zlib.gunzipSync(buffer).toString('utf8');
     }
 
@@ -161,7 +163,7 @@ const readResourceContent = async (resource) => {
     const isText = textTypes.some((type) => resource.fileType?.startsWith(type));
 
     if (isText) {
-      return fs.readFileSync(resource.fileUrl, 'utf8');
+      return fs.readFileSync(resourcePath, 'utf8');
     }
 
     if (resource.fileType?.includes('pdf')) {

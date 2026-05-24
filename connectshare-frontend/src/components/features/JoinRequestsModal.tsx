@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { X, Check, Loader2 } from 'lucide-react';
 import api from '../../services/api';
@@ -29,13 +29,7 @@ export const JoinRequestsModal = ({ workspaceId, onClose, onRequestHandled }: Jo
   const [handlingId, setHandlingId] = useState<string | null>(null);
   const { addToast } = useToast();
 
-  useEffect(() => {
-    fetchRequests();
-    const interval = setInterval(fetchRequests, 30000);
-    return () => clearInterval(interval);
-  }, [workspaceId]);
-
-  const fetchRequests = async () => {
+  const fetchRequests = useCallback(async () => {
     try {
       const res = await api.get(`/api/v1/workspaces/${workspaceId}/join-requests`);
       setRequests(res.data.data.requests || []);
@@ -44,7 +38,13 @@ export const JoinRequestsModal = ({ workspaceId, onClose, onRequestHandled }: Jo
     } finally {
       setLoading(false);
     }
-  };
+  }, [addToast, workspaceId]);
+
+  useEffect(() => {
+    fetchRequests();
+    const interval = setInterval(fetchRequests, 30000);
+    return () => clearInterval(interval);
+  }, [fetchRequests]);
 
   const handleAction = async (requestId: string, action: 'approve' | 'reject') => {
     setHandlingId(requestId);
