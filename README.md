@@ -96,14 +96,4 @@ npm run dev
 | `JWT_ACCESS_SECRET` | Secret string for JWT | Generate locally |
 | `CLIENT_URL` | Frontend URL | Default: `http://localhost:5173` |
 
-## ☁️ Deployment
-- **Backend:** Deployed via **Render** using `render.yaml` configuration.
-- **Frontend:** Deployed via **Vercel** using `vercel.json` rewrite configuration for React Router.
 
-## 🎓 Viva / Interview Guide
-
-- **Why Two Databases? (Polyglot Persistence):** We use PostgreSQL for structured, relational logic (RBAC, User Auth) to guarantee strict referential integrity. We use MongoDB for unstructured metadata (Resources, Chat, Vectors) because it handles flexible JSON documents and vector embeddings more natively without complex migrations.
-- **Why Streams + Zlib?** Large file uploads can crash Node.js if loaded entirely into RAM. Using `zlib.createGzip()` combined with Node Streams processes data in chunks, keeping memory consumption low (O(1) memory complexity) while reducing network/storage costs.
-- **How RBAC Works:** Access is controlled via a custom Express middleware `roleMiddleware.js`. It queries the `WorkspaceMember` table (PostgreSQL) and checks if the user's role matches or exceeds the required hierarchy (`VIEWER` < `MEMBER` < `ADMIN`) before proceeding to the controller.
-- **How AI Search Works:** When a file is uploaded, Gemini API generates a dense vector embedding (an array of floats) representing its semantic meaning. During search, the query is also vectorized. We compute the `Cosine Similarity` between the query vector and all resource vectors in MongoDB, returning results with the highest mathematical similarity regardless of exact keyword matches.
-- **What EventEmitter does:** The native Node `eventBus` decouples systems. When a user uploads a file, the controller fires an event (`eventBus.emit('resource:uploaded')`). A listener file picks this up in the background and writes to the ActivityLog collection. This means the core request isn't blocked by secondary logging operations, improving API response times.
