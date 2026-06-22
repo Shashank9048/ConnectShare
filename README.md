@@ -96,4 +96,4 @@ npm run dev
 | `JWT_ACCESS_SECRET` | Secret string for JWT | Generate locally |
 | `CLIENT_URL` | Frontend URL | Default: `http://localhost:5173` |
 
-
+## Deployed at: https://connectshare-frontend.onrender.com/
